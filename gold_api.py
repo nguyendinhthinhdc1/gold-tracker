@@ -38,20 +38,50 @@ async def get_sjc_price() -> dict:
     return {}
 
 async def get_xauusd_price() -> dict:
-    """Lấy giá XAU/USD từ GoldPrice.org (không cần API key)."""
-    url = "https://data-asg.goldprice.org/dbXRates/USD"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    """Lấy giá XAU/USD. Thử goldprice.org trước, fallback sang frankfurter."""
+
+    # --- Source 1: goldprice.org ---
+    url1 = "https://data-asg.goldprice.org/dbXRates/USD"
+    headers1 = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://goldprice.org/",
+        "Origin": "https://goldprice.org",
+    }
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, timeout=10)
-            data = resp.json()
-            item = data["items"][0]
-            return {
-                "price_usd": round(item["xauPrice"], 2),
-                "change_pct": round(item["pcXau"], 2)
-            }
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(url1, headers=headers1, timeout=10)
+            if resp.status_code == 200 and resp.text.strip():
+                data = resp.json()
+                item = data["items"][0]
+                return {
+                    "price_usd": round(item["xauPrice"], 2),
+                    "change_pct": round(item["pcXau"], 2)
+                }
+            print(f"goldprice.org trả về status={resp.status_code}, body rỗng. Thử fallback...")
     except Exception as e:
-        print(f"Lỗi XAU/USD API: {e}")
+        print(f"Lỗi goldprice.org: {e}. Thử fallback...")
+
+    # --- Source 2: Frankfurter (tỷ giá EUR base, XAU/USD tính ngược) ---
+    # Frankfurter không hỗ trợ XAU trực tiếp → dùng metals-api miễn phí (open)
+    # Fallback: metals-live.p.rapidapi.com hoặc fawazahmed0/currency-api (GitHub)
+    url2 = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/xau.json"
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(url2, timeout=10)
+            if resp.status_code == 200 and resp.text.strip():
+                data = resp.json()
+                # data["xau"]["usd"] = số USD cho 1 XAU
+                price = data.get("xau", {}).get("usd")
+                if price:
+                    return {
+                        "price_usd": round(float(price), 2),
+                        "change_pct": 0.0   # fallback không có % thay đổi
+                    }
+    except Exception as e:
+        print(f"Lỗi fallback XAU/USD API: {e}")
+
     return {}
 
 def format_sjc_message(results: list) -> str:

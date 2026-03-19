@@ -1,11 +1,49 @@
 import os
 import sqlite3
 from datetime import datetime
+from functools import wraps
 from dotenv import load_dotenv
 
 load_dotenv()
 
 DB_FILE = os.getenv("DB_FILE", "gold.db")
+
+# Admin IDs loaded from .env (comma-separated)
+_raw_admin_ids = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = set(
+    int(x.strip()) for x in _raw_admin_ids.split(",") if x.strip().isdigit()
+)
+
+def is_user_banned(chat_id: int) -> bool:
+    """Return True if the given chat_id is banned."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT is_banned FROM users WHERE chat_id=?", (chat_id,))
+    row = c.fetchone()
+    conn.close()
+    return bool(row and row[0])
+
+def check_banned(func):
+    """Decorator: block banned users from using a command."""
+    @wraps(func)
+    async def wrapper(update, context, *args, **kwargs):
+        chat_id = update.effective_user.id
+        if is_user_banned(chat_id):
+            await update.message.reply_text("⛔ Bạn đã bị cấm sử dụng bot này.")
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+def admin_only(func):
+    """Decorator: restrict a command to admin users only."""
+    @wraps(func)
+    async def wrapper(update, context, *args, **kwargs):
+        chat_id = update.effective_user.id
+        if chat_id not in ADMIN_IDS:
+            await update.message.reply_text("🚫 Lệnh này chỉ dành cho admin.")
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)

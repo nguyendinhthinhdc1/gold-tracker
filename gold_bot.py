@@ -19,12 +19,14 @@ from telegram.ext import (
 from database import (
     init_db, save_price, get_history,
     add_alert, get_alerts, get_all_active_alerts,
-    mark_alert_triggered, delete_alert
+    mark_alert_triggered, delete_alert,
+    register_user, get_all_users, ban_user,
+    check_banned, admin_only
 )
 from gold_api import get_sjc_price, get_xauusd_price, format_sjc_message, format_xauusd_message
 
 from api_key_manager import get_key_status
-from database import register_user
+
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
