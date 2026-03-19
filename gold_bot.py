@@ -1,0 +1,397 @@
+import asyncio
+import io
+import os
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters, ContextTypes, ConversationHandler
+)
+
+from database import (
+    init_db, save_price, get_history,
+    add_alert, get_alerts, get_all_active_alerts,
+    mark_alert_triggered, delete_alert
+)
+from gold_api import get_sjc_price, get_xauusd_price, format_sjc_message, format_xauusd_message
+
+from api_key_manager import get_key_status
+from database import register_user
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# === ConversationHandler states ===
+WAIT_SOURCE, WAIT_TYPE, WAIT_THRESHOLD = range(3)
+
+# ============================================================
+# /start
+# ============================================================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    # Tự động lưu user vào DB
+    register_user(
+        chat_id=user.id,
+        username=user.username or "",
+        full_name=user.full_name or ""
+    )
+    text = (
+        "👋 *Bot Giá Vàng Pro* — Đầy đủ tính năng!\n\n"
+        "📌 *Lệnh hỗ trợ:*\n"
+        "• /giavang — Giá vàng SJC ngay\n"
+        "• /xauusd — Giá vàng thế giới XAU/USD\n"
+        "• /tatca — Xem cả SJC lẫn XAU/USD\n"
+        "• /lichsu — Lịch sử giá (biểu đồ)\n"
+        "• /canhbao — Đặt cảnh báo ngưỡng giá\n"
+        "• /xemcanhbao — Danh sách cảnh báo đang chờ\n"
+        "• /xoacanhbao — Xoá cảnh báo\n"
+        "• /batdau — Nhận thông báo tự động mỗi giờ\n"
+        "• /dungthongbao — Tắt thông báo tự động\n\n"
+        "💬 Hoặc gõ tự nhiên: *'giá vàng hôm nay'*, *'vàng thế giới'*..."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# ============================================================
+# Giá vàng SJC
+# ============================================================
+async def giavang(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = await get_sjc_price()
+    if not data:
+        await update.message.reply_text("❌ Không lấy được giá SJC, thử lại sau.")
+        return
+    save_price("SJC", data["buy"], data["sell"])
+    await update.message.reply_text(format_sjc_message(data["all"]), parse_mode="Markdown")
+
+# ============================================================
+# Giá vàng thế giới XAU/USD
+# ============================================================
+async def xauusd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = await get_xauusd_price()
+    if not data:
+        await update.message.reply_text("❌ Không lấy được giá XAU/USD, thử lại sau.")
+        return
+    save_price("XAU_USD", data["price_usd"], data["price_usd"])
+    await update.message.reply_text(format_xauusd_message(data), parse_mode="Markdown")
+
+# ============================================================
+# Cả hai loại giá
+# ============================================================
+async def tatca(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sjc_data, xau_data = await asyncio.gather(get_sjc_price(), get_xauusd_price())
+    msg = ""
+    if sjc_data:
+        save_price("SJC", sjc_data["buy"], sjc_data["sell"])
+        msg += format_sjc_message(sjc_data["all"]) + "\n\n"
+    if xau_data:
+        save_price("XAU_USD", xau_data["price_usd"], xau_data["price_usd"])
+        msg += format_xauusd_message(xau_data)
+    if not msg:
+        await update.message.reply_text("❌ Lỗi khi lấy dữ liệu.")
+        return
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# ============================================================
+# Lịch sử giá — Vẽ biểu đồ
+# ============================================================
+async def lichsu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📊 SJC (VNĐ)", callback_data="history_SJC")],
+        [InlineKeyboardButton("🌍 XAU/USD ($)", callback_data="history_XAU_USD")],
+    ]
+    await update.message.reply_text(
+        "📈 Chọn loại giá vàng để xem lịch sử:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def lichsu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    source = query.data.replace("history_", "")
+    rows = get_history(source, limit=24)
+
+    if len(rows) < 2:
+        await query.message.reply_text("⚠️ Chưa đủ dữ liệu lịch sử. Hãy dùng bot thêm một thời gian.")
+        return
+
+    times  = [datetime.strptime(r[2], "%Y-%m-%d %H:%M:%S") for r in rows]
+    sells  = [r[1] for r in rows]
+    buys   = [r[0] for r in rows]
+
+    label = "Triệu VNĐ" if source == "SJC" else "USD/oz"
+    title = "Giá Vàng SJC (VNĐ)" if source == "SJC" else "Giá XAU/USD ($)"
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(times, sells, label="Bán", color="#e74c3c", linewidth=2, marker="o", markersize=4)
+    ax.plot(times, buys,  label="Mua", color="#2ecc71", linewidth=2, marker="o", markersize=4)
+    ax.fill_between(times, buys, sells, alpha=0.1, color="gray")
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.set_ylabel(label)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m %H:%M"))
+    plt.xticks(rotation=30, fontsize=8)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=150)
+    buf.seek(0)
+    plt.close()
+    await query.message.reply_photo(photo=buf, caption=f"📊 Lịch sử {title} — {len(rows)} bản ghi gần nhất")
+
+# ============================================================
+# Cảnh báo ngưỡng — ConversationHandler
+# ============================================================
+async def canhbao_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🇻🇳 SJC (VNĐ)", callback_data="alert_src_SJC")],
+        [InlineKeyboardButton("🌍 XAU/USD ($)", callback_data="alert_src_XAU_USD")],
+    ]
+    await update.message.reply_text(
+        "🔔 *Đặt cảnh báo giá vàng*\nChọn nguồn giá:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return WAIT_SOURCE
+
+async def canhbao_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["alert_source"] = query.data.replace("alert_src_", "")
+    keyboard = [
+        [InlineKeyboardButton("📈 Cảnh báo khi GIÁ TĂNG vượt ngưỡng", callback_data="alert_type_above")],
+        [InlineKeyboardButton("📉 Cảnh báo khi GIÁ GIẢM dưới ngưỡng", callback_data="alert_type_below")],
+    ]
+    await query.message.reply_text("Chọn loại cảnh báo:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return WAIT_TYPE
+
+async def canhbao_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["alert_type"] = query.data.replace("alert_type_", "")
+    source = context.user_data["alert_source"]
+    unit = "VNĐ (ví dụ: 95000000)" if source == "SJC" else "USD (ví dụ: 3100)"
+    await query.message.reply_text(f"💰 Nhập mức giá ngưỡng ({unit}):")
+    return WAIT_THRESHOLD
+
+async def canhbao_threshold(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        threshold = float(update.message.text.replace(",", "").replace(".", ""))
+        chat_id   = update.effective_chat.id
+        source    = context.user_data["alert_source"]
+        atype     = context.user_data["alert_type"]
+        add_alert(chat_id, source, atype, threshold)
+        sign = "tăng vượt" if atype == "above" else "giảm dưới"
+        unit = "VNĐ" if source == "SJC" else "USD"
+        fmt  = f"{int(threshold):,}".replace(",", ".")
+        await update.message.reply_text(
+            f"✅ *Đã đặt cảnh báo!*\n"
+            f"Sẽ thông báo khi giá *{source}* {sign} *{fmt} {unit}*",
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ Giá trị không hợp lệ. Hãy nhập số (ví dụ: 95000000)")
+    return ConversationHandler.END
+
+async def canhbao_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Đã huỷ đặt cảnh báo.")
+    return ConversationHandler.END
+
+async def xem_canhbao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = get_alerts(update.effective_chat.id)
+    if not rows:
+        await update.message.reply_text("📭 Bạn chưa có cảnh báo nào đang chờ.")
+        return
+    lines = ["🔔 *Danh sách cảnh báo đang chờ:*\n"]
+    for row in rows:
+        aid, source, atype, thresh = row
+        sign = "vượt trên" if atype == "above" else "dưới"
+        unit = "VNĐ" if source == "SJC" else "USD"
+        fmt  = f"{int(thresh):,}".replace(",", ".")
+        lines.append(f"• ID `{aid}` | {source} {sign} *{fmt} {unit}*")
+    lines.append("\nDùng /xoacanhbao <ID> để xoá.")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def xoa_canhbao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Cú pháp: /xoacanhbao <ID>\nVí dụ: /xoacanhbao 3")
+        return
+    try:
+        alert_id = int(args[0])
+        delete_alert(alert_id, update.effective_chat.id)
+        await update.message.reply_text(f"🗑️ Đã xoá cảnh báo ID {alert_id}.")
+    except ValueError:
+        await update.message.reply_text("❌ ID không hợp lệ.")
+
+# ============================================================
+# Thông báo tự động mỗi giờ
+# ============================================================
+async def gui_thongbao(context: ContextTypes.DEFAULT_TYPE):
+    sjc_data, xau_data = await asyncio.gather(get_sjc_price(), get_xauusd_price())
+    msg = ""
+    if sjc_data:
+        save_price("SJC", sjc_data["buy"], sjc_data["sell"])
+        msg += format_sjc_message(sjc_data["all"]) + "\n\n"
+    if xau_data:
+        save_price("XAU_USD", xau_data["price_usd"], xau_data["price_usd"])
+        msg += format_xauusd_message(xau_data)
+    if msg:
+        await context.bot.send_message(chat_id=context.job.chat_id, text=msg, parse_mode="Markdown")
+
+async def batdau(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if context.job_queue.get_jobs_by_name(f"notify_{chat_id}"):
+        await update.message.reply_text("✅ Thông báo mỗi giờ đã đang chạy!")
+        return
+    context.job_queue.run_repeating(
+        gui_thongbao, interval=3600, first=10,
+        chat_id=chat_id, name=f"notify_{chat_id}"
+    )
+    await update.message.reply_text("🔔 Đã bật! Bạn sẽ nhận giá vàng *SJC + XAU/USD* mỗi giờ.", parse_mode="Markdown")
+
+async def dungthongbao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    jobs = context.job_queue.get_jobs_by_name(f"notify_{chat_id}")
+    if not jobs:
+        await update.message.reply_text("ℹ️ Bạn chưa bật thông báo.")
+        return
+    for job in jobs:
+        job.schedule_removal()
+    await update.message.reply_text("🔕 Đã tắt thông báo tự động.")
+
+# ============================================================
+# Kiểm tra cảnh báo ngưỡng — Chạy mỗi 5 phút
+# ============================================================
+async def kiem_tra_canh_bao(context: ContextTypes.DEFAULT_TYPE):
+    sjc_data, xau_data = await asyncio.gather(get_sjc_price(), get_xauusd_price())
+    current = {
+        "SJC":     sjc_data.get("sell", 0) if sjc_data else 0,
+        "XAU_USD": xau_data.get("price_usd", 0) if xau_data else 0,
+    }
+    for aid, chat_id, source, atype, threshold in get_all_active_alerts():
+        price = current.get(source, 0)
+        if price == 0:
+            continue
+        triggered = (atype == "above" and price >= threshold) or \
+                    (atype == "below" and price <= threshold)
+        if triggered:
+            sign = "vượt trên 📈" if atype == "above" else "giảm dưới 📉"
+            unit = "VNĐ" if source == "SJC" else "USD"
+            fmt_price = f"{int(price):,}".replace(",", ".")
+            fmt_thresh = f"{int(threshold):,}".replace(",", ".")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"🚨 *CẢNH BÁO GIÁ VÀNG!*\n"
+                    f"Giá *{source}* đã {sign} ngưỡng *{fmt_thresh} {unit}*\n"
+                    f"💰 Giá hiện tại: *{fmt_price} {unit}*"
+                ),
+                parse_mode="Markdown"
+            )
+            mark_alert_triggered(aid)
+
+# ============================================================
+# Hỏi đáp tự nhiên
+# ============================================================
+async def hoi_dap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
+    if any(kw in text for kw in ["thế giới", "xau", "usd", "quốc tế", "ounce"]):
+        await xauusd(update, context)
+    elif any(kw in text for kw in ["sjc", "vàng", "giá", "mua", "bán"]):
+        await giavang(update, context)
+    else:
+        await update.message.reply_text(
+            "🤖 Thử hỏi: *'giá vàng hôm nay'* hoặc *'giá vàng thế giới'*\n"
+            "Hoặc dùng /start để xem menu.",
+            parse_mode="Markdown"
+        )
+
+# ============================================================
+# Thông tin API key
+# ============================================================
+async def thongtin_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = get_key_status()
+    msg = (
+        f"🔑 *Thông tin API Key*\n\n"
+        f"Trạng thái: {status['status']}\n"
+        f"Hết hạn lúc: {status['expires_at'] or 'chưa có'}\n"
+        f"Còn lại: {status['remaining'] if status['valid'] else '0 giờ'}\n\n"
+        f"_Bot sẽ tự động gia hạn khi cần._"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# ============================================================
+# Admin: Xem danh sách user
+# ============================================================
+@check_banned
+async def danh_sach_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users = get_all_users()
+    msg = f"👥 *Danh sách user* — Tổng: {len(users)}\n\n"
+    for uid, uname, name, joined in users:
+        msg += f"• {name} (@{uname}) — ID: `{uid}`\n"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# ============================================================
+# Admin: Ban user
+# ============================================================
+@admin_only
+async def ban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Cú pháp: /ban <ID>")
+        return
+    try:
+        uid = int(context.args[0])
+        ban_user(uid)
+        await update.message.reply_text(f"⛔ Đã ban user ID `{uid}`.", parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text("❌ ID không hợp lệ.")  
+
+# ============================================================
+# MAIN
+# ============================================================
+def main():
+    init_db()
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # ConversationHandler cho cảnh báo
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("canhbao", canhbao_start)],
+        states={
+            WAIT_SOURCE:    [CallbackQueryHandler(canhbao_source, pattern="^alert_src_")],
+            WAIT_TYPE:      [CallbackQueryHandler(canhbao_type,   pattern="^alert_type_")],
+            WAIT_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, canhbao_threshold)],
+        },
+        fallbacks=[CommandHandler("cancel", canhbao_cancel)],
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("giavang", giavang))
+    app.add_handler(CommandHandler("xauusd", xauusd))
+    app.add_handler(CommandHandler("tatca", tatca))
+    app.add_handler(CommandHandler("lichsu", lichsu))
+    app.add_handler(CommandHandler("batdau", batdau))
+    app.add_handler(CommandHandler("dungthongbao", dungthongbao))
+    app.add_handler(CommandHandler("xemcanhbao", xem_canhbao))
+    app.add_handler(CommandHandler("xoacanhbao", xoa_canhbao))
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(lichsu_callback, pattern="^history_"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, hoi_dap))
+    app.add_handler(CommandHandler("thongtinkey", thongtin_key))
+    app.add_handler(CommandHandler("danhsachuser", danh_sach_user))
+    app.add_handler(CommandHandler("ban", ban_user_cmd))
+
+    # Job kiểm tra cảnh báo mỗi 5 phút
+    app.job_queue.run_repeating(kiem_tra_canh_bao, interval=300, first=15)
+
+    print("🤖 Gold Bot Pro đang chạy...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
