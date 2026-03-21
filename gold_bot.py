@@ -5,7 +5,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,7 +23,10 @@ from database import (
     register_user, get_all_users, ban_user,
     check_banned, admin_only
 )
-from gold_api import get_sjc_price, get_xauusd_price, format_sjc_message, format_xauusd_message
+from gold_api import (
+    get_sjc_price, get_doji_price, get_pnj_price, get_xauusd_price,
+    format_sjc_message, format_doji_message, format_pnj_message, format_xauusd_message,
+)
 
 from api_key_manager import get_key_status
 
@@ -47,9 +50,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 *Bot Giá Vàng Pro* — Đầy đủ tính năng!\n\n"
         "📌 *Lệnh hỗ trợ:*\n"
-        "• /giavang — Giá vàng SJC ngay\n"
+        "• /giavang — Giá vàng SJC\n"
+        "• /doji — Giá vàng DOJI\n"
+        "• /pnj — Giá vàng PNJ\n"
         "• /xauusd — Giá vàng thế giới XAU/USD\n"
-        "• /tatca — Xem cả SJC lẫn XAU/USD\n"
+        "• /tatca — Xem tất cả: SJC + DOJI + PNJ + XAU/USD\n"
         "• /lichsu — Lịch sử giá (biểu đồ)\n"
         "• /canhbao — Đặt cảnh báo ngưỡng giá\n"
         "• /xemcanhbao — Danh sách cảnh báo đang chờ\n"
@@ -60,6 +65,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
+def save_all_sjc_types(sjc_data):
+    if not sjc_data or "all" not in sjc_data or not sjc_data["all"]:
+        return
+    item = sjc_data["all"][0]
+    types_mapping = [
+        ("SJC", "buy_1l", "sell_1l"),
+        ("SJC_5C", "buy_5c", "sell_5c"),
+        ("SJC_1C", "buy_1c", "sell_1c"),
+        ("SJC_NHAN1C", "buy_nhan1c", "sell_nhan1c"),
+        ("SJC_NUT9999", "buy_nutrang_9999", "sell_nutrang_9999"),
+        ("SJC_NUT99", "buy_nutrang_99", "sell_nutrang_99"),
+        ("SJC_NUT75", "buy_nutrang_75", "sell_nutrang_75"),
+    ]
+    for source_key, key_buy, key_sell in types_mapping:
+        if key_buy in item and key_sell in item:
+            val_buy = item.get(key_buy, "0")
+            val_sell = item.get(key_sell, "0")
+            if val_buy and val_sell:
+                try:
+                    buy_f = float(val_buy)
+                    sell_f = float(val_sell)
+                    if buy_f > 0 and sell_f > 0:
+                        save_price(source_key, buy_f, sell_f)
+                except ValueError:
+                    pass
+
 # ============================================================
 # Giá vàng SJC
 # ============================================================
@@ -68,8 +99,30 @@ async def giavang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data:
         await update.message.reply_text("❌ Không lấy được giá SJC, thử lại sau.")
         return
-    save_price("SJC", data["buy"], data["sell"])
+    save_all_sjc_types(data)
     await update.message.reply_text(format_sjc_message(data["all"]), parse_mode="Markdown")
+
+# ============================================================
+# Giá vàng DOJI
+# ============================================================
+async def doji(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = await get_doji_price()
+    if not data:
+        await update.message.reply_text("❌ Không lấy được giá DOJI, thử lại sau.")
+        return
+    save_price("DOJI", data["buy_hn"], data["sell_hn"])
+    await update.message.reply_text(format_doji_message(data), parse_mode="Markdown")
+
+# ============================================================
+# Giá vàng PNJ
+# ============================================================
+async def pnj(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = await get_pnj_price()
+    if not data:
+        await update.message.reply_text("❌ Không lấy được giá PNJ, thử lại sau.")
+        return
+    save_price("PNJ", data["buy_hn"], data["sell_hn"])
+    await update.message.reply_text(format_pnj_message(data), parse_mode="Markdown")
 
 # ============================================================
 # Giá vàng thế giới XAU/USD
@@ -86,11 +139,19 @@ async def xauusd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Cả hai loại giá
 # ============================================================
 async def tatca(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sjc_data, xau_data = await asyncio.gather(get_sjc_price(), get_xauusd_price())
+    sjc_data, doji_data, pnj_data, xau_data = await asyncio.gather(
+        get_sjc_price(), get_doji_price(), get_pnj_price(), get_xauusd_price()
+    )
     msg = ""
     if sjc_data:
-        save_price("SJC", sjc_data["buy"], sjc_data["sell"])
+        save_all_sjc_types(sjc_data)
         msg += format_sjc_message(sjc_data["all"]) + "\n\n"
+    if doji_data:
+        save_price("DOJI", doji_data["buy_hn"], doji_data["sell_hn"])
+        msg += format_doji_message(doji_data) + "\n\n"
+    if pnj_data:
+        save_price("PNJ", pnj_data["buy_hn"], pnj_data["sell_hn"])
+        msg += format_pnj_message(pnj_data) + "\n\n"
     if xau_data:
         save_price("XAU_USD", xau_data["price_usd"], xau_data["price_usd"])
         msg += format_xauusd_message(xau_data)
@@ -104,8 +165,26 @@ async def tatca(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 async def lichsu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("📊 SJC (VNĐ)", callback_data="history_SJC")],
-        [InlineKeyboardButton("🌍 XAU/USD ($)", callback_data="history_XAU_USD")],
+        [
+            InlineKeyboardButton("SJC 1L", callback_data="history_SJC"),
+            InlineKeyboardButton("SJC 5 chỉ", callback_data="history_SJC_5C")
+        ],
+        [
+            InlineKeyboardButton("SJC 1 chỉ", callback_data="history_SJC_1C"),
+            InlineKeyboardButton("Nhẫn 99,99", callback_data="history_SJC_NHAN1C")
+        ],
+        [
+            InlineKeyboardButton("Nữ trang 99,99", callback_data="history_SJC_NUT9999"),
+            InlineKeyboardButton("Nữ trang 99", callback_data="history_SJC_NUT99")
+        ],
+        [
+            InlineKeyboardButton("Nữ trang 75", callback_data="history_SJC_NUT75"),
+            InlineKeyboardButton("DOJI", callback_data="history_DOJI")
+        ],
+        [
+            InlineKeyboardButton("PNJ", callback_data="history_PNJ"),
+            InlineKeyboardButton("XAU/USD", callback_data="history_XAU_USD")
+        ]
     ]
     await update.message.reply_text(
         "📈 Chọn loại giá vàng để xem lịch sử:",
@@ -122,12 +201,30 @@ async def lichsu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("⚠️ Chưa đủ dữ liệu lịch sử. Hãy dùng bot thêm một thời gian.")
         return
 
-    times  = [datetime.strptime(r[2], "%Y-%m-%d %H:%M:%S") for r in rows]
+    gmt7 = timezone(timedelta(hours=7))
+    times  = [
+        datetime.strptime(r[2], "%Y-%m-%d %H:%M:%S")
+        .replace(tzinfo=timezone.utc)
+        .astimezone(gmt7)
+        for r in rows
+    ]
     sells  = [r[1] for r in rows]
     buys   = [r[0] for r in rows]
 
-    label = "Triệu VNĐ" if source == "SJC" else "USD/oz"
-    title = "Giá Vàng SJC (VNĐ)" if source == "SJC" else "Giá XAU/USD ($)"
+    label = "Triệu VNĐ" if source != "XAU_USD" else "USD/oz"
+    titles = {
+        "SJC": "SJC 1L (VNĐ)",
+        "SJC_5C": "SJC 5 chỉ (VNĐ)",
+        "SJC_1C": "SJC 1 chỉ (VNĐ)",
+        "SJC_NHAN1C": "Nhẫn SJC 99,99 (VNĐ)",
+        "SJC_NUT9999": "Vàng NT 99,99% (VNĐ)",
+        "SJC_NUT99": "Vàng NT 99% (VNĐ)",
+        "SJC_NUT75": "Vàng NT 75% (VNĐ)",
+        "DOJI": "Giá Vàng DOJI (VNĐ)",
+        "PNJ": "Giá Vàng PNJ (VNĐ)",
+        "XAU_USD": "Giá XAU/USD ($)"
+    }
+    title = titles.get(source, f"Giá {source}")
 
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(times, sells, label="Bán", color="#e74c3c", linewidth=2, marker="o", markersize=4)
@@ -236,11 +333,19 @@ async def xoa_canhbao(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Thông báo tự động mỗi giờ
 # ============================================================
 async def gui_thongbao(context: ContextTypes.DEFAULT_TYPE):
-    sjc_data, xau_data = await asyncio.gather(get_sjc_price(), get_xauusd_price())
+    sjc_data, doji_data, pnj_data, xau_data = await asyncio.gather(
+        get_sjc_price(), get_doji_price(), get_pnj_price(), get_xauusd_price()
+    )
     msg = ""
     if sjc_data:
-        save_price("SJC", sjc_data["buy"], sjc_data["sell"])
+        save_all_sjc_types(sjc_data)
         msg += format_sjc_message(sjc_data["all"]) + "\n\n"
+    if doji_data:
+        save_price("DOJI", doji_data["buy_hn"], doji_data["sell_hn"])
+        msg += format_doji_message(doji_data) + "\n\n"
+    if pnj_data:
+        save_price("PNJ", pnj_data["buy_hn"], pnj_data["sell_hn"])
+        msg += format_pnj_message(pnj_data) + "\n\n"
     if xau_data:
         save_price("XAU_USD", xau_data["price_usd"], xau_data["price_usd"])
         msg += format_xauusd_message(xau_data)
@@ -256,7 +361,7 @@ async def batdau(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gui_thongbao, interval=3600, first=10,
         chat_id=chat_id, name=f"notify_{chat_id}"
     )
-    await update.message.reply_text("🔔 Đã bật! Bạn sẽ nhận giá vàng *SJC + XAU/USD* mỗi giờ.", parse_mode="Markdown")
+    await update.message.reply_text("🔔 Đã bật! Bạn sẽ nhận giá vàng *SJC + DOJI + PNJ + XAU/USD* mỗi giờ.", parse_mode="Markdown")
 
 async def dungthongbao(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -375,6 +480,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("giavang", giavang))
+    app.add_handler(CommandHandler("doji", doji))
+    app.add_handler(CommandHandler("pnj", pnj))
     app.add_handler(CommandHandler("xauusd", xauusd))
     app.add_handler(CommandHandler("tatca", tatca))
     app.add_handler(CommandHandler("lichsu", lichsu))

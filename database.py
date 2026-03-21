@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from dotenv import load_dotenv
 
@@ -87,7 +87,7 @@ def save_price(source: str, buy: float, sell: float):
     c = conn.cursor()
     c.execute(
         "INSERT INTO price_history (source, buy_price, sell_price, timestamp) VALUES (?, ?, ?, ?)",
-        (source, buy, sell, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        (source, buy, sell, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
     )
     conn.commit()
     conn.close()
@@ -150,7 +150,7 @@ def register_user(chat_id: int, username: str, full_name: str):
     c.execute("""
         INSERT OR IGNORE INTO users (chat_id, username, full_name, joined_at)
         VALUES (?, ?, ?, ?)
-    """, (chat_id, username, full_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    """, (chat_id, username, full_name, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
 
