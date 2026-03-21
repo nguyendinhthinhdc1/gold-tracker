@@ -476,6 +476,7 @@ def main():
             WAIT_THRESHOLD: [MessageHandler(filters.TEXT & ~filters.COMMAND, canhbao_threshold)],
         },
         fallbacks=[CommandHandler("cancel", canhbao_cancel)],
+        per_message=False
     )
 
     app.add_handler(CommandHandler("start", start))
@@ -498,6 +499,13 @@ def main():
 
     # Job kiểm tra cảnh báo mỗi 5 phút
     app.job_queue.run_repeating(kiem_tra_canh_bao, interval=300, first=15)
+
+    try:
+        import sys
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
     print("🤖 Gold Bot Pro đang chạy...")
     app.run_polling()
