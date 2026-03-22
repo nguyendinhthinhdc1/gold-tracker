@@ -419,20 +419,6 @@ async def hoi_dap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Send 'typing' action to show bot is processing
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
     
-    if not GEMINI_API_KEY:
-        text_lower = user_text.lower()
-        if any(kw in text_lower for kw in ["thế giới", "xau", "usd", "quốc tế", "ounce"]):
-            await xauusd(update, context)
-        elif any(kw in text_lower for kw in ["sjc", "vàng", "giá", "mua", "bán"]):
-            await giavang(update, context)
-        else:
-            await update.message.reply_text(
-                "🤖 Tính năng AI chưa được kích hoạt vì thiếu GEMINI_API_KEY.\n"
-                "Thử hỏi: *'giá vàng hôm nay'* hoặc dùng /start để xem menu.",
-                parse_mode="Markdown"
-            )
-        return
-
     try:
         # Fetch latest prices for context
         sjc_data, doji_data, pnj_data, xau_data = await asyncio.gather(
