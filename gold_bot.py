@@ -8,6 +8,8 @@ import matplotlib.dates as mdates
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
+import google.generativeai as genai
+
 load_dotenv()
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -32,6 +34,10 @@ from api_key_manager import get_key_status
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # === ConversationHandler states ===
 WAIT_SOURCE, WAIT_TYPE, WAIT_THRESHOLD = range(3)
@@ -405,20 +411,59 @@ async def kiem_tra_canh_bao(context: ContextTypes.DEFAULT_TYPE):
             mark_alert_triggered(aid)
 
 # ============================================================
-# Hỏi đáp tự nhiên
+# Hỏi đáp tự nhiên bằng Google Gemini API
 # ============================================================
 async def hoi_dap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    if any(kw in text for kw in ["thế giới", "xau", "usd", "quốc tế", "ounce"]):
-        await xauusd(update, context)
-    elif any(kw in text for kw in ["sjc", "vàng", "giá", "mua", "bán"]):
-        await giavang(update, context)
-    else:
-        await update.message.reply_text(
-            "🤖 Thử hỏi: *'giá vàng hôm nay'* hoặc *'giá vàng thế giới'*\n"
-            "Hoặc dùng /start để xem menu.",
-            parse_mode="Markdown"
+    user_text = update.message.text
+    
+    # Send 'typing' action to show bot is processing
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    
+    if not GEMINI_API_KEY:
+        text_lower = user_text.lower()
+        if any(kw in text_lower for kw in ["thế giới", "xau", "usd", "quốc tế", "ounce"]):
+            await xauusd(update, context)
+        elif any(kw in text_lower for kw in ["sjc", "vàng", "giá", "mua", "bán"]):
+            await giavang(update, context)
+        else:
+            await update.message.reply_text(
+                "🤖 Tính năng AI chưa được kích hoạt vì thiếu GEMINI_API_KEY.\n"
+                "Thử hỏi: *'giá vàng hôm nay'* hoặc dùng /start để xem menu.",
+                parse_mode="Markdown"
+            )
+        return
+
+    try:
+        # Fetch latest prices for context
+        sjc_data, doji_data, pnj_data, xau_data = await asyncio.gather(
+            get_sjc_price(), get_doji_price(), get_pnj_price(), get_xauusd_price()
         )
+        
+        context_text = "Bạn là một trợ lý ảo chuyên cung cấp thông tin giá vàng tại Việt Nam và thế giới. Thông tin giá vàng MỚI NHẤT hiện tại:\n\n"
+        if sjc_data and "all" in sjc_data:
+            context_text += format_sjc_message(sjc_data["all"]) + "\n\n"
+        if doji_data:
+            context_text += format_doji_message(doji_data) + "\n\n"
+        if pnj_data:
+            context_text += format_pnj_message(pnj_data) + "\n\n"
+        if xau_data:
+            context_text += format_xauusd_message(xau_data) + "\n\n"
+            
+        system_instruction = (
+            f"{context_text}"
+            "Hãy trả lời câu hỏi của người dùng một cách ngắn gọn, súc tích, tự nhiên, thân thiện và chính xác dựa trên dữ liệu giá vàng ở trên. "
+            "Trình bày dưới dạng văn bản thường (plain text), KHÔNG dùng các ký tự định dạng kiểu Markdown như dấu hoa thị (*) hay gạch dưới (_) để in đậm in nghiêng, vì có thể gây lỗi hiển thị Telegram (dùng icon/emoji thoải mái). "
+            "Nếu người dùng hỏi thông tin không liên quan đến vàng, giá cả, ngoại tệ hay các chức năng của bạn, hãy từ chối lịch sự và nhắc họ rằng bạn là bot giá vàng."
+        )
+        
+        model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=system_instruction)
+        response = model.generate_content(user_text)
+        
+        await update.message.reply_text(response.text)
+        
+    except Exception as e:
+        print(f"Lỗi khi gọi Gemini API: {e}")
+        await update.message.reply_text("❌ Đã xảy ra lỗi khi kết nối với hệ thống AI. Vui lòng thử lại sau.")
 
 # ============================================================
 # Thông tin API key
