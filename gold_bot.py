@@ -169,7 +169,7 @@ async def tatca(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # Lịch sử giá — Vẽ biểu đồ
 # ============================================================
-async def lichsu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def   (update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("SJC 1L", callback_data="history_SJC"),
@@ -238,7 +238,7 @@ async def lichsu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ax.fill_between(times, buys, sells, alpha=0.1, color="gray")
     ax.set_title(title, fontsize=14, fontweight="bold")
     ax.set_ylabel(label)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m %H:%M"))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m %H:%M", tz=gmt7))
     plt.xticks(rotation=30, fontsize=8)
     ax.legend()
     ax.grid(True, alpha=0.3)
