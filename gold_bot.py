@@ -169,7 +169,7 @@ async def tatca(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # Lịch sử giá — Vẽ biểu đồ
 # ============================================================
-async def   (update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def lichsu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("SJC 1L", callback_data="history_SJC"),
